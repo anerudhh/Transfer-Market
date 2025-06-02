@@ -3,8 +3,8 @@ import pandas as pd
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
-import random
 from typing import Dict, Any
+from datetime import datetime
 
 # Configure page
 st.set_page_config(
@@ -156,13 +156,13 @@ def main():
         
         # Create stats dataframe for display
         stats_df = pd.DataFrame([
-            ["Age", stats['age']],
-            ["Position", stats['position']],
-            ["Current Club", stats['current_club']],
-            ["League", stats['league']],
-            ["Appearances", stats['appearances']],
-            ["Goals", stats['goals']],
-            ["Assists", stats['assists']],
+            ["Age", str(stats['age'])],
+            ["Position", str(stats['position'])],
+            ["Current Club", str(stats['current_club'])],
+            ["League", str(stats['league'])],
+            ["Appearances", str(stats['appearances'])],
+            ["Goals", str(stats['goals'])],
+            ["Assists", str(stats['assists'])],
             ["Minutes Played", f"{stats['minutes_played']:,}"]
         ], columns=["Statistic", "Value"])
         
