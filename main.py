@@ -4,7 +4,6 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Dict, Any
-from datetime import datetime
 
 # Configure page
 st.set_page_config(
@@ -13,68 +12,94 @@ st.set_page_config(
     layout="wide"
 )
 
-def get_player_stats(name: str) -> Dict[str, Any]:
-    """
-    Placeholder function that returns synthetic player statistics.
-    In a real application, this would fetch data from a database or API.
-    """
-    # Define realistic ranges for different positions and leagues
-    positions = ['Forward', 'Midfielder', 'Defender', 'Goalkeeper']
-    leagues = ['Premier League', 'La Liga', 'Serie A', 'Ligue 1', 'Bundesliga']
-    
-    # Clubs for each league
-    clubs = {
-        'Premier League': ['Manchester City', 'Arsenal', 'Liverpool', 'Chelsea', 'Manchester United', 'Tottenham'],
-        'La Liga': ['Real Madrid', 'Barcelona', 'Atletico Madrid', 'Sevilla', 'Valencia', 'Real Sociedad'],
-        'Serie A': ['Juventus', 'Inter Milan', 'AC Milan', 'Napoli', 'Roma', 'Lazio'],
-        'Ligue 1': ['PSG', 'Monaco', 'Marseille', 'Lyon', 'Lille', 'Nice'],
-        'Bundesliga': ['Bayern Munich', 'Borussia Dortmund', 'RB Leipzig', 'Bayer Leverkusen', 'Eintracht Frankfurt', 'Wolfsburg']
-    }
-    
-    # Generate consistent stats based on name hash for reproducibility
-    random.seed(hash(name) % (2**32))
-    
-    position = random.choice(positions)
-    league = random.choice(leagues)
-    club = random.choice(clubs[league])
-    age = random.randint(18, 38)
-    
-    # Adjust stats based on position
-    if position == 'Goalkeeper':
-        appearances = random.randint(15, 38)
-        goals = random.randint(0, 2)
-        assists = random.randint(0, 3)
-        minutes_played = appearances * random.randint(80, 90)
-    elif position == 'Forward':
-        appearances = random.randint(20, 38)
-        goals = random.randint(5, 35)
-        assists = random.randint(2, 15)
-        minutes_played = appearances * random.randint(70, 90)
-    elif position == 'Midfielder':
-        appearances = random.randint(25, 38)
-        goals = random.randint(2, 20)
-        assists = random.randint(5, 20)
-        minutes_played = appearances * random.randint(75, 90)
-    else:  # Defender
-        appearances = random.randint(25, 38)
-        goals = random.randint(0, 8)
-        assists = random.randint(1, 10)
-        minutes_played = appearances * random.randint(80, 90)
-    
+@st.cache_resource
+def load_players():
+    df = pd.read_csv('attached_assets/players.csv')
+    df.columns = df.columns.str.strip().str.lower()
+    df['name_lower'] = df['name'].str.lower()
+    return df
+
+@st.cache_resource
+def load_valuations():
+    df = pd.read_csv('attached_assets/player_valuations.csv')
+    df.columns = df.columns.str.strip().str.lower()
+    return df
+
+@st.cache_resource
+def load_game_events():
+    df = pd.read_csv('game_events.csv')
+    df.columns = df.columns.str.strip().str.lower()
+    return df
+
+@st.cache_resource
+def load_appearances():
+    try:
+        df = pd.read_csv('attached_assets/appearances.csv')
+        df.columns = df.columns.str.strip().str.lower()
+        return df
+    except Exception:
+        return None
+
+def get_latest_market_value(player_id, valuations_df):
+    vals = valuations_df[valuations_df['player_id'] == player_id]
+    if vals.empty:
+        return None
+    latest = vals.sort_values('datetime').iloc[-1]
+    return latest['market_value_in_eur']
+
+def get_player_stats(name: str, players_df: pd.DataFrame, valuations_df: pd.DataFrame, events_df: pd.DataFrame, appearances_df: pd.DataFrame) -> Dict[str, Any] or None:
+    name_lower = name.strip().lower()
+    row = players_df[players_df['name_lower'] == name_lower]
+    if row.empty:
+        row = players_df[players_df['name_lower'].str.contains(name_lower)]
+        if row.empty:
+            return None
+    row = row.iloc[0]
+    player_id = row['player_id']
+
+    # Age
+    try:
+        dob = pd.to_datetime(row['date_of_birth'], errors='coerce')
+        age = int((pd.Timestamp('today') - dob).days // 365.25) if pd.notnull(dob) else None
+    except Exception:
+        age = None
+
+    # Market value
+    market_value = get_latest_market_value(player_id, valuations_df)
+    if market_value is None or pd.isna(market_value):
+        market_value = row.get('market_value_in_eur', None)
+
+    # Appearances, assists, minutes played
+    assists = None
+    minutes_played = None
+    appearances = None
+    if appearances_df is not None:
+        player_apps = appearances_df[appearances_df['player_id'] == player_id]
+        appearances = len(player_apps)
+        assists = int(player_apps['assists'].sum()) if 'assists' in player_apps and not player_apps.empty else None
+        minutes_played = int(player_apps['minutes_played'].sum()) if 'minutes_played' in player_apps and not player_apps.empty else None
+
+    # Goals from events
+    goals = int(events_df[(events_df['player_id'] == player_id) & (events_df['type'] == 'Goals')].shape[0])
+
+    # Fallback for appearances if not available
+    if appearances is None:
+        appearances = len(events_df[(events_df['player_id'] == player_id)]['game_id'].unique())
+
     return {
         'age': age,
-        'position': position,
-        'current_club': club,
-        'league': league,
+        'position': row['position'],
+        'current_club': row.get('current_club_name', ''),
+        'league': row.get('current_club_domestic_competition_id', ''),
         'appearances': appearances,
         'goals': goals,
         'assists': assists,
-        'minutes_played': minutes_played
+        'minutes_played': minutes_played,
+        'market_value': market_value
     }
 
 @st.cache_resource
 def load_model():
-    """Load the pre-trained model with caching for better performance."""
     try:
         with open('market_value_model.pkl', 'rb') as f:
             model = pickle.load(f)
@@ -87,101 +112,82 @@ def load_model():
         st.stop()
 
 def predict_market_value(stats: Dict[str, Any], model) -> float:
-    """Predict market value based on player statistics."""
-    # Convert categorical variables to numerical
     position_encoding = {'Forward': 3, 'Midfielder': 2, 'Defender': 1, 'Goalkeeper': 0}
-    league_encoding = {'Premier League': 4, 'La Liga': 3, 'Serie A': 2, 'Bundesliga': 1, 'Ligue 1': 0}
-    
-    # Prepare features in the same order as training
+    league_encoding = {'GB1': 4, 'ES1': 3, 'IT1': 2, 'L1': 1, 'FR1': 0}
     features = np.array([[
-        stats['age'],
-        position_encoding[stats['position']],
-        league_encoding[stats['league']],
-        stats['appearances'],
-        stats['goals'],
-        stats['assists'],
-        stats['minutes_played']
+        stats['age'] if stats['age'] is not None else 0,
+        position_encoding.get(stats['position'], 1),
+        league_encoding.get(stats['league'], 1),
+        stats['appearances'] if stats['appearances'] is not None else 0,
+        stats['goals'] if stats['goals'] is not None else 0,
+        stats['assists'] if stats['assists'] is not None else 0,
+        stats['minutes_played'] if stats['minutes_played'] is not None else 0
     ]])
-    
     prediction = model.predict(features)[0]
-    return max(prediction, 0)  # Ensure non-negative values
+    return max(prediction, 0)
 
 def display_feature_importance(model):
-    """Display feature importance chart."""
     feature_names = ['Age', 'Position', 'League', 'Appearances', 'Goals', 'Assists', 'Minutes Played']
     importance = model.feature_importances_
-    
-    # Create matplotlib figure
     fig, ax = plt.subplots(figsize=(10, 6))
     bars = ax.barh(feature_names, importance, color='skyblue')
     ax.set_xlabel('Feature Importance')
     ax.set_title('Feature Importance in Market Value Prediction')
     ax.grid(axis='x', alpha=0.3)
-    
-    # Add value labels on bars
     for bar, imp in zip(bars, importance):
-        ax.text(bar.get_width() + 0.001, bar.get_y() + bar.get_height()/2, 
-                f'{imp:.3f}', va='center', fontsize=10)
-    
+        ax.text(bar.get_width() + 0.001, bar.get_y() + bar.get_height()/2, f'{imp:.3f}', va='center', fontsize=10)
     plt.tight_layout()
     return fig
 
 def main():
-    # App header
     st.title("⚽ Football Player Market Value Predictor")
     st.markdown("Enter a player's name to predict their market value using machine learning!")
-    
-    # Load model
+
     model = load_model()
-    
-    # User input
+    players_df = load_players()
+    valuations_df = load_valuations()
+    events_df = load_game_events()
+    appearances_df = load_appearances()
+
     col1, col2 = st.columns([2, 1])
-    
     with col1:
         player_name = st.text_input(
             "Enter Player Name:",
-            placeholder="e.g., Lionel Messi, Cristiano Ronaldo, Kylian Mbappé"
+            placeholder="e.g., Lionel Messi, Eden Hazard, Cristiano Ronaldo"
         )
-    
     with col2:
         predict_button = st.button("🔮 Predict Market Value", type="primary")
-    
+
     if player_name and predict_button:
-        # Get player stats
-        with st.spinner("Analyzing player statistics..."):
-            stats = get_player_stats(player_name)
-        
-        # Display player information
+        with st.spinner("Searching for player in database..."):
+            stats = get_player_stats(player_name, players_df, valuations_df, events_df, appearances_df)
+        if stats is None:
+            st.error(f"Player '{player_name}' not found in the database. Please try a different name or check the spelling.")
+            return
+
         st.subheader(f"📊 Player Profile: {player_name}")
-        
-        # Create stats dataframe for display
         stats_df = pd.DataFrame([
-            ["Age", str(stats['age'])],
+            ["Age", str(stats['age']) if stats['age'] is not None else "N/A"],
             ["Position", str(stats['position'])],
             ["Current Club", str(stats['current_club'])],
             ["League", str(stats['league'])],
-            ["Appearances", str(stats['appearances'])],
-            ["Goals", str(stats['goals'])],
-            ["Assists", str(stats['assists'])],
-            ["Minutes Played", f"{stats['minutes_played']:,}"]
+            ["Appearances", str(stats['appearances']) if stats['appearances'] is not None else "N/A"],
+            ["Goals", str(stats['goals']) if stats['goals'] is not None else "N/A"],
+            ["Assists", str(stats['assists']) if stats['assists'] is not None else "N/A"],
+            ["Minutes Played", str(stats['minutes_played']) if stats['minutes_played'] is not None else "N/A"],
+            ["Latest Market Value", f"€{int(stats['market_value']):,}" if stats['market_value'] is not None else "N/A"]
         ], columns=["Statistic", "Value"])
-        
+
         col1, col2 = st.columns([1, 1])
-        
         with col1:
             st.table(stats_df)
-        
         with col2:
-            # Predict market value
             predicted_value = predict_market_value(stats, model)
-            
             st.metric(
                 "💰 Predicted Market Value",
                 f"€{predicted_value:,.0f}",
                 help="Predicted market value in Euros"
             )
-            
-            # Add some context based on value ranges
             if predicted_value > 100_000_000:
                 st.success("🌟 World-class player!")
             elif predicted_value > 50_000_000:
@@ -190,53 +196,48 @@ def main():
                 st.info("🔥 High-value player!")
             else:
                 st.info("📈 Developing player!")
-        
-        # Feature importance visualization
+
         st.subheader("📈 Model Feature Importance")
         st.markdown("This chart shows which statistics most influence the market value prediction:")
-        
         fig = display_feature_importance(model)
         st.pyplot(fig)
-        
-        # Model information
+
         with st.expander("ℹ️ Model Information"):
             st.write(f"**Model Type:** Random Forest Regressor")
             st.write(f"**Number of Features:** {len(model.feature_importances_)}")
             st.write(f"**Training Data:** Synthetic dataset from Top 5 European leagues")
             st.write("**Features Used:** Age, Position, League, Appearances, Goals, Assists, Minutes Played")
-    
+
     elif player_name and not predict_button:
         st.info("👆 Click the 'Predict Market Value' button to see the prediction!")
-    
-    # Sidebar with information
+
     with st.sidebar:
         st.header("ℹ️ About")
         st.write("""
         This app predicts football player market values using a Random Forest machine learning model.
-        
+
         **How it works:**
         1. Enter any player name
-        2. The app generates realistic statistics
+        2. The app searches the database for real statistics
         3. ML model predicts market value
-        4. View feature importance analysis
-        
+        4. feature importance analysis compares the players' stats to the rest of europe
+        5. Try entering the full names for more accurate results
+        6. Stats are updated as of October 2023
+
         **Leagues covered:**
-        - Premier League 🏴󠁧󠁢󠁥󠁮󠁧󠁿
+        - Premier League 🏴
         - La Liga 🇪🇸
         - Serie A 🇮🇹
         - Bundesliga 🇩🇪
         - Ligue 1 🇫🇷
         """)
-        
-        st.header("🎯 Try these players:")
+
+        st.header("Try these players:")
         example_players = [
+            "Eden Hazard",
             "Lionel Messi",
-            "Kylian Mbappé",
-            "Erling Haaland",
-            "Pedri",
-            "Jude Bellingham"
+            "Paulo Dybala"
         ]
-        
         for player in example_players:
             if st.button(player, key=f"example_{player}"):
                 st.session_state.player_name = player
