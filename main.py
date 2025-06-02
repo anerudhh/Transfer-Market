@@ -223,6 +223,7 @@ def main():
         4. feature importance analysis compares the players' stats to the rest of europe
         5. Try entering the full names for more accurate results
         6. Stats are updated as of October 2023
+        7. Developed by Anerudh R 
 
         **Leagues covered:**
         - Premier League 🏴
